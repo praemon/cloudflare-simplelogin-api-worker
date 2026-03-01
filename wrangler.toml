@@ -6,14 +6,15 @@ workers_dev = false
 keep_vars = true
 
 # ──────────────────────────────────────────────────────────────────────────────
-# KV Namespace — set in the Cloudflare dashboard (not here, so it is never
-# overwritten by a wrangler deploy):
-#   Workers & Pages → your worker → Settings → KV Namespace Bindings
-#   Variable name : ALLOWED_ALIASES
-#   KV namespace  : (select your namespace)
-#
-# Must be the SAME namespace that the email-forwarder worker reads from.
+# KV Namespace — shared with the email-forwarder worker.
+# The ID is not sensitive; committing it here is safe and required so that
+# wrangler does not strip the binding on every deploy.
+# Find the ID: Cloudflare dashboard → Workers & Pages → KV → your namespace.
 # ──────────────────────────────────────────────────────────────────────────────
+[[kv_namespaces]]
+binding = "ALLOWED_ALIASES"
+id = "c980f7b4526e48b68af5e950ab2f7798"
+
 # Environment variables — set ALL of these in the Cloudflare dashboard:
 #   Workers & Pages → your worker → Settings → Variables and Secrets
 #

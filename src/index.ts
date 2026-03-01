@@ -32,7 +32,7 @@
  *   SL_BASE_URL    – (optional) SimpleLogin base URL for sync;
  *                    defaults to "https://app.simplelogin.io"
  *
- * KV schema (ALLOWED_ALIASES namespace)
+ * KV schema (EMAIL_FORWARD_KV namespace)
  * ──────────────────────────────────────
  *   key : lowercase alias email address   e.g. "foo.bar@mail.example.com"
  *   value : JSON-encoded AliasRecord
@@ -48,7 +48,7 @@
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface Env {
-  ALLOWED_ALIASES: KVNamespace;
+  EMAIL_FORWARD_KV: KVNamespace;
   API_KEY: string;
   SIGNING_SECRET: string;
   DOMAIN: string;
@@ -419,7 +419,7 @@ export default {
       // Check if there's already a recommendation for this hostname
       let recommendation: { alias: string; hostname: string } | undefined;
       if (hostname) {
-        const aliases = await getAllAliases(env.ALLOWED_ALIASES);
+        const aliases = await getAllAliases(env.EMAIL_FORWARD_KV);
         const match = aliases.find(
           (a) => a.enabled && a.note?.includes(`hostname:${hostname}`),
         );
@@ -468,13 +468,13 @@ export default {
       if (!suffix) return err("signed_suffix is invalid or has been tampered with");
 
       const email = `${prefix}${suffix}`;
-      const existing = await env.ALLOWED_ALIASES.get(email);
+      const existing = await env.EMAIL_FORWARD_KV.get(email);
       if (existing !== null) return err(`${email} already exists`, 409);
 
       const hostname = url.searchParams.get("hostname") ?? null;
       const note = (body.note as string | undefined) ?? (hostname ? `hostname:${hostname}` : null);
       const name = (body.name as string | undefined) ?? null;
-      const id = await nextId(env.ALLOWED_ALIASES);
+      const id = await nextId(env.EMAIL_FORWARD_KV);
       const now = Math.floor(Date.now() / 1000);
 
       const record: AliasRecord = {
@@ -490,7 +490,7 @@ export default {
         pinned: false,
       };
 
-      await env.ALLOWED_ALIASES.put(email, JSON.stringify(record));
+      await env.EMAIL_FORWARD_KV.put(email, JSON.stringify(record));
       return json(aliasToSLFormat(record, mailboxId, env.USER_EMAIL), 201);
     }
 
@@ -517,7 +517,7 @@ export default {
       }
 
       const email = `${prefix}@${env.DOMAIN}`;
-      const id = await nextId(env.ALLOWED_ALIASES);
+      const id = await nextId(env.EMAIL_FORWARD_KV);
       const now = Math.floor(Date.now() / 1000);
 
       const record: AliasRecord = {
@@ -533,7 +533,7 @@ export default {
         pinned: false,
       };
 
-      await env.ALLOWED_ALIASES.put(email, JSON.stringify(record));
+      await env.EMAIL_FORWARD_KV.put(email, JSON.stringify(record));
       return json(aliasToSLFormat(record, mailboxId, env.USER_EMAIL), 201);
     }
 
@@ -544,7 +544,7 @@ export default {
       const disabledFilter = url.searchParams.get("disabled");
       const pinnedFilter = url.searchParams.get("pinned");
 
-      let aliases = await getAllAliases(env.ALLOWED_ALIASES);
+      let aliases = await getAllAliases(env.EMAIL_FORWARD_KV);
 
       if (enabledFilter !== null)  aliases = aliases.filter((a) => a.enabled && !a.pinned);
       if (disabledFilter !== null) aliases = aliases.filter((a) => !a.enabled);
@@ -565,31 +565,31 @@ export default {
 
       // GET /api/aliases/:id
       if (method === "GET" && !subRoute) {
-        const record = await getAliasById(env.ALLOWED_ALIASES, aliasId);
+        const record = await getAliasById(env.EMAIL_FORWARD_KV, aliasId);
         if (!record) return err("Alias not found", 404);
         return json(aliasToSLFormat(record, mailboxId, env.USER_EMAIL));
       }
 
       // DELETE /api/aliases/:id
       if (method === "DELETE" && !subRoute) {
-        const record = await getAliasById(env.ALLOWED_ALIASES, aliasId);
+        const record = await getAliasById(env.EMAIL_FORWARD_KV, aliasId);
         if (!record) return err("Alias not found", 404);
-        await env.ALLOWED_ALIASES.delete(record.email);
+        await env.EMAIL_FORWARD_KV.delete(record.email);
         return json({ deleted: true });
       }
 
       // POST /api/aliases/:id/toggle
       if (method === "POST" && subRoute === "/toggle") {
-        const record = await getAliasById(env.ALLOWED_ALIASES, aliasId);
+        const record = await getAliasById(env.EMAIL_FORWARD_KV, aliasId);
         if (!record) return err("Alias not found", 404);
         record.enabled = !record.enabled;
-        await env.ALLOWED_ALIASES.put(record.email, JSON.stringify(record));
+        await env.EMAIL_FORWARD_KV.put(record.email, JSON.stringify(record));
         return json({ enabled: record.enabled });
       }
 
       // PATCH /api/aliases/:id
       if (method === "PATCH" && !subRoute) {
-        const record = await getAliasById(env.ALLOWED_ALIASES, aliasId);
+        const record = await getAliasById(env.EMAIL_FORWARD_KV, aliasId);
         if (!record) return err("Alias not found", 404);
 
         let body: Record<string, unknown> = {};
@@ -599,7 +599,7 @@ export default {
         if ("name"   in body) record.name   = (body.name as string | null) ?? null;
         if ("pinned" in body) record.pinned = Boolean(body.pinned);
 
-        await env.ALLOWED_ALIASES.put(record.email, JSON.stringify(record));
+        await env.EMAIL_FORWARD_KV.put(record.email, JSON.stringify(record));
         return json(aliasToSLFormat(record, mailboxId, env.USER_EMAIL));
       }
     }
@@ -613,7 +613,7 @@ export default {
             email: env.USER_EMAIL,
             default: true,
             creation_timestamp: 0,
-            nb_alias: (await getAllAliases(env.ALLOWED_ALIASES)).length,
+            nb_alias: (await getAllAliases(env.EMAIL_FORWARD_KV)).length,
             verified: true,
           },
         ],
@@ -657,7 +657,7 @@ export default {
       );
 
       try {
-        const result = await syncWithSimpleLogin(slApiKey, slBaseUrl, env.ALLOWED_ALIASES);
+        const result = await syncWithSimpleLogin(slApiKey, slBaseUrl, env.EMAIL_FORWARD_KV);
         return json(result);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);

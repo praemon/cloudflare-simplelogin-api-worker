@@ -10,7 +10,7 @@ keep_vars = true
 # ID is injected at deploy time from the KV_NAMESPACE_ID CI environment variable.
 # ──────────────────────────────────────────────────────────────────────────────
 [[kv_namespaces]]
-binding = "ALLOWED_ALIASES"
+binding = "EMAIL_FORWARD_KV"
 id = "${KV_NAMESPACE_ID}"
 
 # Environment variables — set ALL of these in the Cloudflare dashboard:

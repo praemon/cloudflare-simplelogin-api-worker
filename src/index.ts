@@ -245,7 +245,11 @@ async function getAllAliases(kv: KVNamespace): Promise<AliasRecord[]> {
 }
 
 function aliasToSLFormat(record: AliasRecord, mailboxId: number, mailboxEmail: string) {
-  const date = new Date(record.creation_timestamp * 1000);
+  const ts = record.creation_timestamp;
+  const safets = typeof ts === "number" && Number.isFinite(ts) && ts > 0
+    ? ts
+    : Math.floor(Date.now() / 1000);
+  const date = new Date(safets * 1000);
   const creation_date = date.toISOString().replace("T", " ").slice(0, 22) + "+00:00";
   return {
     id: record.id,
@@ -253,7 +257,7 @@ function aliasToSLFormat(record: AliasRecord, mailboxId: number, mailboxEmail: s
     name: record.name,
     enabled: record.enabled,
     creation_date,
-    creation_timestamp: record.creation_timestamp,
+    creation_timestamp: safets,
     note: record.note,
     nb_block: record.nb_block,
     nb_forward: record.nb_forward,

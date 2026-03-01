@@ -1,0 +1,44 @@
+name = "cloudflare-simplelogin-api-worker"
+main = "src/index.ts"
+compatibility_date = "2026-02-24"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+keep_vars = true
+
+# ──────────────────────────────────────────────────────────────────────────────
+# KV Namespace — set in the Cloudflare dashboard (not here, so it is never
+# overwritten by a wrangler deploy):
+#   Workers & Pages → your worker → Settings → KV Namespace Bindings
+#   Variable name : ALLOWED_ALIASES
+#   KV namespace  : (select your namespace)
+#
+# Must be the SAME namespace that the email-forwarder worker reads from.
+# ──────────────────────────────────────────────────────────────────────────────
+# Environment variables — set ALL of these in the Cloudflare dashboard:
+#   Workers & Pages → your worker → Settings → Variables and Secrets
+#
+# Plain-text variables (type: Text):
+#   DOMAIN         – alias domain, e.g. "mail.example.com"
+#   USER_NAME      – display name returned by /api/user_info
+#   USER_EMAIL     – real email returned by /api/user_info
+#   MAILBOX_ID     – integer ID for the single virtual mailbox, e.g. "1"
+#
+# Secret variables (type: Secret):
+#   API_KEY        – token clients send in the Authentication header
+#   SIGNING_SECRET – random string used to HMAC-sign alias suffixes
+# ──────────────────────────────────────────────────────────────────────────────
+
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+head_sampling_rate = 1
+persist = true

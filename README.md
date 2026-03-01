@@ -22,6 +22,8 @@ Aliases created here are stored in a shared KV namespace that the companion [clo
 | `GET` | `/api/setting` | Return user settings |
 | `POST` | `/api/sync` | Import all aliases from a real SimpleLogin account |
 
+SimpleLogin API documentation can be found here: https://github.com/simple-login/app/blob/master/docs/api.md
+
 ## Setup
 
 ### Prerequisites

@@ -5,7 +5,7 @@
  * (e.g. Bitwarden) use to create / manage email aliases.  Aliases are stored
  * in a KV namespace that is shared with the companion email-forwarder worker.
  *
- * Implemented endpoints
+ * Implemented endpoints (https://github.com/simple-login/app/blob/master/docs/api.md)
  * ─────────────────────
  *   GET    /api/user_info
  *   GET    /api/v5/alias/options
@@ -19,8 +19,9 @@
  *   GET    /api/v2/mailboxes
  *   GET    /api/v2/setting/domains
  *   GET    /api/setting
+ *   POST   /api/sync             ← import aliases from real SimpleLogin
  *
- * Environment variables (set via wrangler.toml [vars] or `wrangler secret put`)
+ * Environment variables (set in the Cloudflare dashboard)
  * ─────────────────────────────────────────────────────────────────────────────
  *   API_KEY        (secret) – token clients send in the Authentication header
  *   SIGNING_SECRET (secret) – random string used to HMAC-sign alias suffixes
@@ -28,6 +29,8 @@
  *   USER_NAME      – display name returned by /api/user_info
  *   USER_EMAIL     – real email address returned by /api/user_info
  *   MAILBOX_ID     – integer ID for the single virtual mailbox
+ *   SL_BASE_URL    – (optional) SimpleLogin base URL for sync;
+ *                    defaults to "https://app.simplelogin.io"
  *
  * KV schema (ALLOWED_ALIASES namespace)
  * ──────────────────────────────────────
@@ -38,13 +41,8 @@
  *
  * Compatibility with cloudflare-email-forwarder-worker
  * ─────────────────────────────────────────────────────
- *   The email worker does `env.ALLOWED_ALIASES.get(alias)` and forwards when
- *   the result is non-null.  JSON values satisfy that check, so both workers
- *   can share the same KV namespace without modification.
- *
- *   NOTE: The email forwarder currently does NOT check the `enabled` field.
- *   If you want disabled aliases to stop forwarding, update the email worker
- *   to parse the JSON value and gate on `record.enabled`.
+ *   The email worker parses the JSON value and gates on `record.enabled`, so
+ *   aliases toggled here (or imported via sync) are respected immediately.
  */
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -57,6 +55,22 @@ export interface Env {
   USER_NAME: string;
   USER_EMAIL: string;
   MAILBOX_ID: string;
+  /** Optional — defaults to https://app.simplelogin.io */
+  SL_BASE_URL?: string;
+}
+
+/** Shape of a single alias object returned by the real SimpleLogin API. */
+interface SLApiAlias {
+  id: number;
+  email: string;
+  name: string | null;
+  note: string | null;
+  enabled: boolean;
+  creation_timestamp: number;
+  nb_forward: number;
+  nb_block: number;
+  nb_reply: number;
+  pinned: boolean;
 }
 
 interface AliasRecord {
@@ -250,6 +264,96 @@ function aliasToSLFormat(record: AliasRecord, mailboxId: number, mailboxEmail: s
     mailbox: { id: mailboxId, email: mailboxEmail },
     mailboxes: [{ id: mailboxId, email: mailboxEmail }],
     latest_activity: null,
+  };
+}
+
+// ─── SimpleLogin sync ────────────────────────────────────────────────────────
+
+/**
+ * Fetch every alias page from the real SimpleLogin API and upsert each one
+ * into the KV store.  Matching is done by email address (the KV key).
+ *
+ * - Existing KV records keep their local numeric ID and have their metadata
+ *   refreshed (enabled, name, note, pinned, counters).
+ * - New aliases are assigned a fresh local ID via nextId().
+ *
+ * Returns a summary object.
+ */
+async function syncWithSimpleLogin(
+  slApiKey: string,
+  slBaseUrl: string,
+  kv: KVNamespace,
+): Promise<{ added: number; updated: number; total_sl: number; total_kv_after: number }> {
+  // ── 1. Load existing KV aliases into a map keyed by email ────────────────
+  const existing = await getAllAliases(kv);
+  const kvMap = new Map<string, AliasRecord>(existing.map((a) => [a.email, a]));
+
+  // ── 2. Page through SL's /api/v2/aliases ─────────────────────────────────
+  const slAliases: SLApiAlias[] = [];
+  let pageId = 0;
+  while (true) {
+    const resp = await fetch(
+      `${slBaseUrl}/api/v2/aliases?page_id=${pageId}`,
+      { headers: { Authentication: slApiKey } },
+    );
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`SL API returned ${resp.status}: ${text}`);
+    }
+    const data = (await resp.json()) as { aliases: SLApiAlias[] };
+    if (!data.aliases || data.aliases.length === 0) break;
+    slAliases.push(...data.aliases);
+    pageId++;
+  }
+
+  // ── 3. Upsert each SL alias into KV ──────────────────────────────────────
+  let added = 0;
+  let updated = 0;
+
+  for (const slAlias of slAliases) {
+    const email = slAlias.email.toLowerCase().trim();
+    const existing = kvMap.get(email);
+
+    if (existing) {
+      // Update mutable fields; preserve local ID and creation_timestamp.
+      const updated_record: AliasRecord = {
+        ...existing,
+        name: slAlias.name,
+        note: slAlias.note,
+        enabled: slAlias.enabled,
+        pinned: slAlias.pinned,
+        nb_forward: slAlias.nb_forward,
+        nb_block: slAlias.nb_block,
+        nb_reply: slAlias.nb_reply,
+      };
+      await kv.put(email, JSON.stringify(updated_record));
+      updated++;
+    } else {
+      // New alias — assign a local ID.
+      const id = await nextId(kv);
+      const record: AliasRecord = {
+        id,
+        email,
+        name: slAlias.name,
+        note: slAlias.note,
+        enabled: slAlias.enabled,
+        creation_timestamp: slAlias.creation_timestamp,
+        nb_forward: slAlias.nb_forward,
+        nb_block: slAlias.nb_block,
+        nb_reply: slAlias.nb_reply,
+        pinned: slAlias.pinned,
+      };
+      await kv.put(email, JSON.stringify(record));
+      kvMap.set(email, record);
+      added++;
+    }
+  }
+
+  return {
+    added,
+    updated,
+    total_sl: slAliases.length,
+    total_kv_after: kvMap.size,
   };
 }
 
@@ -530,6 +634,35 @@ export default {
         sender_format: "AT",
         random_alias_suffix: "random_string",
       });
+    }
+
+    // ── POST /api/sync ────────────────────────────────────────────────────────
+    // Body (JSON): { sl_api_key: string, sl_base_url?: string }
+    // Fetches all aliases from the real SimpleLogin API and upserts them into KV.
+    if (method === "POST" && path === "/api/sync") {
+      let body: Record<string, unknown>;
+      try {
+        body = (await request.json()) as Record<string, unknown>;
+      } catch {
+        return err("request body cannot be empty");
+      }
+
+      const slApiKey = (body.sl_api_key as string | undefined)?.trim();
+      if (!slApiKey) return err("sl_api_key is required");
+
+      const slBaseUrl = (
+        (body.sl_base_url as string | undefined)?.replace(/\/$/, "") ??
+        env.SL_BASE_URL?.replace(/\/$/, "") ??
+        "https://app.simplelogin.io"
+      );
+
+      try {
+        const result = await syncWithSimpleLogin(slApiKey, slBaseUrl, env.ALLOWED_ALIASES);
+        return json(result);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return err(`Sync failed: ${message}`, 502);
+      }
     }
 
     return err("Not found", 404);

@@ -37,7 +37,6 @@
  *   key : lowercase alias email address   e.g. "foo.bar@mail.example.com"
  *   value : JSON-encoded AliasRecord
  *
- *   Special key "__next_id__" holds the next numeric alias ID as a string.
  *
  * Compatibility with cloudflare-email-forwarder-worker
  * ─────────────────────────────────────────────────────
@@ -74,7 +73,7 @@ interface SLApiAlias {
 }
 
 interface AliasRecord {
-  id: number;
+  id: string;
   email: string;
   name: string | null;
   note: string | null;
@@ -89,6 +88,18 @@ interface AliasRecord {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /** Small wordlist for random alias generation (word mode). */
+/**
+ * Derive a short opaque alias ID from an email address.
+ * SHA-256 of the email, truncated to the first 4 bytes → 8 hex chars.
+ * e.g. "foo@example.com" → "a3f8c2d1"
+ */
+async function emailToId(email: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(email));
+  return Array.from(new Uint8Array(buf).slice(0, 4))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 const WORD_LIST = [
   "autumn","beach","birch","bloom","breeze","brook","cedar","cloud","coral",
   "creek","dawn","delta","dune","ember","falcon","fern","field","fjord","flame",
@@ -101,8 +112,6 @@ const WORD_LIST = [
   "sunset","swift","terra","thistle","thorn","thunder","tide","timber","vale",
   "valley","violet","vista","wave","willow","wind","winter","wren","zenith",
 ];
-
-const NEXT_ID_KEY = "__next_id__";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -193,31 +202,24 @@ async function verifySuffix(
 
 // ─── KV helpers ──────────────────────────────────────────────────────────────
 
-async function nextId(kv: KVNamespace): Promise<number> {
-  const raw = await kv.get(NEXT_ID_KEY);
-  const id = raw ? parseInt(raw, 10) : 1;
-  await kv.put(NEXT_ID_KEY, String(id + 1));
-  return id;
-}
-
 async function getAliasById(
   kv: KVNamespace,
-  id: number,
+  id: string,
 ): Promise<AliasRecord | null> {
-  // We must scan all keys to find a specific numeric ID.
-  // For typical personal-use scale this is fine (< a few hundred aliases).
-  const list = await kv.list();
-  for (const key of list.keys) {
-    if (key.name === NEXT_ID_KEY) continue;
-    const raw = await kv.get(key.name);
-    if (!raw) continue;
-    try {
-      const record: AliasRecord = JSON.parse(raw);
-      if (record.id === id) return record;
-    } catch {
-      // skip malformed values
+  // Scan key names only (no value fetches), compute hash of each, stop on match.
+  let cursor: string | undefined;
+  do {
+    const opts = cursor ? { cursor } : undefined;
+    const result = await kv.list(opts);
+    for (const key of result.keys) {
+      if (await emailToId(key.name) === id) {
+        const raw = await kv.get(key.name);
+        if (!raw) return null;
+        try { return JSON.parse(raw) as AliasRecord; } catch { return null; }
+      }
     }
-  }
+    cursor = result.list_complete ? undefined : result.cursor;
+  } while (cursor);
   return null;
 }
 
@@ -228,7 +230,6 @@ async function getAllAliases(kv: KVNamespace): Promise<AliasRecord[]> {
     const opts = cursor ? { cursor } : undefined;
     const result = await kv.list(opts);
     for (const key of result.keys) {
-      if (key.name === NEXT_ID_KEY) continue;
       const raw = await kv.get(key.name);
       if (!raw) continue;
       try {
@@ -273,13 +274,66 @@ function aliasToSLFormat(record: AliasRecord, mailboxId: number, mailboxEmail: s
 
 // ─── SimpleLogin sync ────────────────────────────────────────────────────────
 
+/** KV write concurrency limit — stays well under Cloudflare's rate limits. */
+const KV_WRITE_CONCURRENCY = 10;
+
+/** Minimum delay between batches (ms). */
+const KV_BATCH_DELAY_MS = 100;
+
+/**
+ * kv.put() with exponential backoff retry on 429 Too Many Requests.
+ * All other errors are re-thrown immediately.
+ */
+async function kvPutWithRetry(
+  kv: KVNamespace,
+  key: string,
+  value: string,
+  maxAttempts = 6,
+): Promise<void> {
+  let delay = 250;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await kv.put(key, value);
+      return;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("429") && attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay * 2, 8000);
+      } else {
+        throw new Error(`KV PUT failed: ${msg}`);
+      }
+    }
+  }
+}
+
+/**
+ * Run async tasks with a maximum concurrency, then wait a short delay before
+ * the next batch to avoid bursting against KV rate limits.
+ */
+async function batchedWrites(
+  tasks: Array<() => Promise<void>>,
+  concurrency: number,
+  batchDelayMs: number,
+): Promise<void> {
+  for (let i = 0; i < tasks.length; i += concurrency) {
+    await Promise.all(tasks.slice(i, i + concurrency).map((t) => t()));
+    if (i + concurrency < tasks.length) {
+      await new Promise((r) => setTimeout(r, batchDelayMs));
+    }
+  }
+}
+
 /**
  * Fetch every alias page from the real SimpleLogin API and upsert each one
  * into the KV store.  Matching is done by email address (the KV key).
  *
  * - Existing KV records keep their local numeric ID and have their metadata
  *   refreshed (enabled, name, note, pinned, counters).
- * - New aliases are assigned a fresh local ID via nextId().
+ * - New aliases are assigned a fresh local ID via nextId() (done sequentially
+ *   before writes to keep the counter consistent).
+ * - Writes are batched to avoid KV 429 rate-limit errors, with automatic
+ *   exponential backoff retry per write.
  *
  * Returns a summary object.
  */
@@ -287,7 +341,7 @@ async function syncWithSimpleLogin(
   slApiKey: string,
   slBaseUrl: string,
   kv: KVNamespace,
-): Promise<{ added: number; updated: number; total_sl: number; total_kv_after: number }> {
+): Promise<{ added: number; updated: number; skipped: number; total_sl: number; total_kv_after: number }> {
   // ── 1. Load existing KV aliases into a map keyed by email ────────────────
   const existing = await getAllAliases(kv);
   const kvMap = new Map<string, AliasRecord>(existing.map((a) => [a.email, a]));
@@ -310,31 +364,43 @@ async function syncWithSimpleLogin(
     pageId++;
   }
 
-  // ── 3. Upsert each SL alias into KV ──────────────────────────────────────
+  // ── 3. Build the full list of records to write ────────────────────────────
+  // nextId() does a get+put on the counter key, so we call it sequentially
+  // here before batching the actual alias writes.
   let added = 0;
   let updated = 0;
+  let skipped = 0;
+  const writes: Array<[string, string]> = []; // [key, value]
 
   for (const slAlias of slAliases) {
     const email = slAlias.email.toLowerCase().trim();
-    const existing = kvMap.get(email);
+    const prev = kvMap.get(email);
 
-    if (existing) {
-      // Update mutable fields; preserve local ID and creation_timestamp.
-      const updated_record: AliasRecord = {
-        ...existing,
-        name: slAlias.name,
-        note: slAlias.note,
-        enabled: slAlias.enabled,
-        pinned: slAlias.pinned,
-        nb_forward: slAlias.nb_forward,
-        nb_block: slAlias.nb_block,
-        nb_reply: slAlias.nb_reply,
-      };
-      await kv.put(email, JSON.stringify(updated_record));
-      updated++;
+    if (prev) {
+      // Skip write if all fields present in the SL response are already identical.
+      const dirty = (Object.keys(slAlias) as (keyof SLApiAlias)[]).some(
+        (k) => k in prev && (prev as unknown as Record<string, unknown>)[k] !== (slAlias as unknown as Record<string, unknown>)[k],
+      );
+
+      if (dirty) {
+        const record: AliasRecord = {
+          ...prev,
+          name: slAlias.name,
+          note: slAlias.note,
+          enabled: slAlias.enabled,
+          pinned: slAlias.pinned,
+          nb_forward: slAlias.nb_forward,
+          nb_block: slAlias.nb_block,
+          nb_reply: slAlias.nb_reply,
+        };
+        writes.push([email, JSON.stringify(record)]);
+        kvMap.set(email, record);
+        updated++;
+      } else {
+        skipped++;
+      }
     } else {
-      // New alias — assign a local ID.
-      const id = await nextId(kv);
+      const id = await emailToId(email);
       const record: AliasRecord = {
         id,
         email,
@@ -347,15 +413,23 @@ async function syncWithSimpleLogin(
         nb_reply: slAlias.nb_reply,
         pinned: slAlias.pinned,
       };
-      await kv.put(email, JSON.stringify(record));
+      writes.push([email, JSON.stringify(record)]);
       kvMap.set(email, record);
       added++;
     }
   }
 
+  // ── 4. Flush writes in rate-limited batches with retry ───────────────────
+  await batchedWrites(
+    writes.map(([key, value]) => () => kvPutWithRetry(kv, key, value)),
+    KV_WRITE_CONCURRENCY,
+    KV_BATCH_DELAY_MS,
+  );
+
   return {
     added,
     updated,
+    skipped,
     total_sl: slAliases.length,
     total_kv_after: kvMap.size,
   };
@@ -478,7 +552,7 @@ export default {
       const hostname = url.searchParams.get("hostname") ?? null;
       const note = (body.note as string | undefined) ?? (hostname ? `hostname:${hostname}` : null);
       const name = (body.name as string | undefined) ?? null;
-      const id = await nextId(env.EMAIL_FORWARD_KV);
+      const id = await emailToId(email);
       const now = Math.floor(Date.now() / 1000);
 
       const record: AliasRecord = {
@@ -521,7 +595,7 @@ export default {
       }
 
       const email = `${prefix}@${env.DOMAIN}`;
-      const id = await nextId(env.EMAIL_FORWARD_KV);
+      const id = await emailToId(email);
       const now = Math.floor(Date.now() / 1000);
 
       const record: AliasRecord = {
@@ -562,9 +636,9 @@ export default {
 
     // ── Routes with :alias_id ─────────────────────────────────────────────────
     // Match /api/aliases/:id or /api/aliases/:id/toggle
-    const aliasMatch = path.match(/^\/api\/aliases\/(\d+)(\/[a-z]+)?$/);
+    const aliasMatch = path.match(/^\/api\/aliases\/([a-f0-9]{8})(\/[a-z]+)?$/);
     if (aliasMatch) {
-      const aliasId = parseInt(aliasMatch[1], 10);
+      const aliasId = aliasMatch[1];
       const subRoute = aliasMatch[2] ?? "";
 
       // GET /api/aliases/:id

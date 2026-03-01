@@ -2,7 +2,7 @@
 
 A Cloudflare Worker that replicates the [SimpleLogin](https://simplelogin.io) alias API, backed by a Cloudflare KV namespace instead of SimpleLogin's servers. It is designed to work with any client that already speaks the SimpleLogin API — including the **Bitwarden** password manager's built-in alias generator.
 
-Aliases created here are stored in a shared KV namespace that the companion [cloudflare-email-forwarder-worker](https://github.com/dekle/cloudflare-email-forwarder-worker) reads from to decide whether to forward or reject incoming emails.
+Aliases created here are stored in a shared KV namespace that the companion [cloudflare-email-forwarder-worker](https://github.com/praemon/cloudflare-email-forwarder-worker) reads from to decide whether to forward or reject incoming emails.
 
 ## Implemented endpoints
 
@@ -29,7 +29,7 @@ Aliases created here are stored in a shared KV namespace that the companion [clo
 - A Cloudflare account.
 - A domain with **Cloudflare Email Routing** enabled (used by the forwarder worker).
 - A **KV namespace** created in **Workers & Pages → KV** — note its ID.
-- The companion [cloudflare-email-forwarder-worker](https://github.com/dekle/cloudflare-email-forwarder-worker) pointing at the **same KV namespace**.
+- The companion [cloudflare-email-forwarder-worker](https://github.com/praemon/cloudflare-email-forwarder-worker) pointing at the **same KV namespace**.
 
 ### 1. Link the repo to a Cloudflare Worker
 

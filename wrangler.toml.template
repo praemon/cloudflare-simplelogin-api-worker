@@ -7,26 +7,24 @@ keep_vars = true
 
 # ──────────────────────────────────────────────────────────────────────────────
 # KV Namespace — shared with the email-forwarder worker.
-# The ID is not sensitive; committing it here is safe and required so that
-# wrangler does not strip the binding on every deploy.
-# Find the ID: Cloudflare dashboard → Workers & Pages → KV → your namespace.
+# ID is injected at deploy time from the KV_NAMESPACE_ID CI environment variable.
 # ──────────────────────────────────────────────────────────────────────────────
 [[kv_namespaces]]
 binding = "ALLOWED_ALIASES"
-id = "c980f7b4526e48b68af5e950ab2f7798"
+id = "${KV_NAMESPACE_ID}"
 
 # Environment variables — set ALL of these in the Cloudflare dashboard:
 #   Workers & Pages → your worker → Settings → Variables and Secrets
 #
 # Plain-text variables (type: Text):
-#   DOMAIN         – alias domain, e.g. "mail.example.com"
-#   USER_NAME      – display name returned by /api/user_info
-#   USER_EMAIL     – real email returned by /api/user_info
-#   MAILBOX_ID     – integer ID for the single virtual mailbox, e.g. "1"
+#   DOMAIN         - alias domain, e.g. "mail.example.com"
+#   USER_NAME      - display name returned by /api/user_info
+#   USER_EMAIL     - real email returned by /api/user_info
+#   MAILBOX_ID     - integer ID for the single virtual mailbox, e.g. "1"
 #
 # Secret variables (type: Secret):
-#   API_KEY        – token clients send in the Authentication header
-#   SIGNING_SECRET – random string used to HMAC-sign alias suffixes
+#   API_KEY        - token clients send in the Authentication header
+#   SIGNING_SECRET - random string used to HMAC-sign alias suffixes
 # ──────────────────────────────────────────────────────────────────────────────
 
 [observability]

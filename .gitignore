@@ -3,3 +3,6 @@ dist/
 .wrangler/
 *.env
 .dev.vars
+
+# Generated at deploy time from wrangler.toml.template
+wrangler.toml

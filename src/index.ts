@@ -54,7 +54,7 @@ export interface Env {
   DOMAIN: string;
   USER_NAME: string;
   USER_EMAIL: string;
-  MAILBOX_ID: string;
+  MAILBOX_ID?: string;
   /** Optional — defaults to https://app.simplelogin.io */
   SL_BASE_URL?: string;
 }
@@ -389,7 +389,7 @@ export default {
       return err("Invalid API key", 401);
     }
 
-    const mailboxId = parseInt(env.MAILBOX_ID, 10);
+    const mailboxId = parseInt(env.MAILBOX_ID ?? "1", 10) || 1;
 
     // ── GET /api/user_info ────────────────────────────────────────────────────
     if (method === "GET" && path === "/api/user_info") {

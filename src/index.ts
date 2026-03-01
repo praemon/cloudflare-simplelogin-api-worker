@@ -377,10 +377,17 @@ async function syncWithSimpleLogin(
     const prev = kvMap.get(email);
 
     if (prev) {
-      // Skip write if all fields present in the SL response are already identical.
-      const dirty = (Object.keys(slAlias) as (keyof SLApiAlias)[]).some(
-        (k) => k in prev && (prev as unknown as Record<string, unknown>)[k] !== (slAlias as unknown as Record<string, unknown>)[k],
-      );
+      // Compare only the fields we actually sync. SLApiAlias.id is a numeric
+      // SL-side ID and intentionally differs from our local string hash, so it
+      // must be excluded from the comparison.
+      const dirty =
+        prev.name    !== slAlias.name    ||
+        prev.note    !== slAlias.note    ||
+        prev.enabled !== slAlias.enabled ||
+        prev.pinned  !== slAlias.pinned  ||
+        prev.nb_forward !== slAlias.nb_forward ||
+        prev.nb_block   !== slAlias.nb_block   ||
+        prev.nb_reply   !== slAlias.nb_reply;
 
       if (dirty) {
         const record: AliasRecord = {
